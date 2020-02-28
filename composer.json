@@ -1,6 +1,11 @@
 {
-    "name": "liujingyu/sf-swoole-console",
+    "name": "superman2014/sf-swoole-console",
     "require": {
         "symfony/console": "^4.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Superman2014\\SfSwooleConsole\\": "src/"
+        }
     }
 }

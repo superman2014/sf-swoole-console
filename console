@@ -5,10 +5,12 @@
 require __DIR__.'/vendor/autoload.php';
 
 use Symfony\Component\Console\Application;
+use Superman2014\SfSwooleConsole\Command\TaskServerCommand;
 
 $application = new Application();
 
 // ... register commands
+$application->add(new TaskServerCommand());
 
 $application->run();
 
