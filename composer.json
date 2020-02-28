@@ -1,0 +1,6 @@
+{
+    "name": "liujingyu/sf-swoole-console",
+    "require": {
+        "symfony/console": "^4.4"
+    }
+}
