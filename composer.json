@@ -7,5 +7,6 @@
         "psr-4": {
             "Superman2014\\SfSwooleConsole\\": "src/"
         }
-    }
+    },
+    "bin" : ["console"]
 }
