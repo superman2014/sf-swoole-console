@@ -14,6 +14,13 @@ class TaskConstant
         self::USAGE,
     ];
 
+    const USER_COMMAND = [
+        self::STATUS,
+        self::RELOAD,
+        self::RESTART,
+        self::STOP,
+    ];
+
     const START = 'start';
 
     const STOP = 'stop';

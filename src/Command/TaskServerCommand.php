@@ -22,8 +22,8 @@ class TaskServerCommand extends Command
     protected function configure()
     {
         $this
-//            ->setDescription('Start Swoole Task Server')
-//            ->setHelp('Swoole Task Manager')
+            ->setDescription('Start Swoole Task Server')
+            ->setHelp('Swoole Task Manager')
             ->addArgument('cmd', InputArgument::REQUIRED, 'start|stop|status|relaod|restart|ping|usage')
         ;
     }

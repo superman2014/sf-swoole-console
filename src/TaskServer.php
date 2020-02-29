@@ -4,6 +4,7 @@ namespace Superman2014\SfSwooleConsole;
 
 use Swoole\Server;
 use Swoole\Process;
+use Swoole\Client;
 
 class TaskServer
 {
@@ -17,9 +18,13 @@ class TaskServer
         'log_file' => '/tmp/swoole.log',
         'log_level' => 0,
         'task_ipc_mode' => 3,
+        'heartbeat_check_interval' => 5,
+        'heartbeat_idle_time' => 10,
     ];
 
-    const HOST = '0.0.0.0';
+    const LISTEN_HOST = '0.0.0.0';
+
+    const MANAGE_HOST = '127.0.0.1';
 
     const PORT = 9501;
 
@@ -33,34 +38,31 @@ class TaskServer
                 $this->stop();
                 break;
             case TaskConstant::STATUS:
-                $this->status();
+                $this->clientSendCommand()(TaskConstant::STATUS);
                 break;
             case TaskConstant::PING:
                 break;
             case TaskConstant::RELOAD:
-                $this->reload();
+                $this->clientSendCommand()(TaskConstant::RELOAD);
                 break;
             case TaskConstant::RESTART:
-                $this->restart();
+                $this->clientSendCommand()(TaskConstant::RESTART);
                 break;
         }
     }
 
-    public function reload()
+    public function clientSendCommand()
     {
-        $this->stop();
-        $this->start();
-    }
+        return function ($command) {
+            $client = new Client(SWOOLE_SOCK_TCP);
+            if (!$client->connect(self::MANAGE_HOST, self::PORT, -1)) {
+                exit("connect failed. Error: {$client->errCode}\n");
+            }
+            $client->send($command);
+            echo $client->recv();
+            $client->close();
 
-    public function restart()
-    {
-        $this->stop();
-        $this->start();
-    }
-
-    public function status()
-    {
-
+        };
     }
 
     public function start()
@@ -71,12 +73,11 @@ class TaskServer
             return;
         }
 
-        $server = new Server(self::HOST, self::PORT, SWOOLE_BASE, SWOOLE_SOCK_TCP);
+        $server = new Server(self::LISTEN_HOST, self::PORT, SWOOLE_BASE, SWOOLE_SOCK_TCP);
 
         $server->set($this->config);
 
         $server->on('Connect', [$this, 'onConnect']);
-        $server->on('Receive', [$this, 'onReceive']);
         $server->on('Close', [$this, 'onClose']);
         $server->on('Task', [$this, 'onTask']);
         $server->on('Finish', [$this, 'onFinish']);
@@ -85,6 +86,45 @@ class TaskServer
         $server->on('WorkerStop', [$this, 'onWorkerStop']);
         $server->on('ManagerStart', [$this, 'onManagerStart']);
         $server->on('Shutdown', [$this, 'onShutdown']);
+
+        /**
+         * 用户进程实现了广播功能，循环接收unixSocket的消息，并发给服务器的所有连接
+         */
+        $process = new Process(
+            function ($process) use ($server) {
+                $socket = $process->exportSocket();
+                while (true) {
+                    $msg = $socket->recv();
+                    if ($msg == TaskConstant::STATUS) {
+                        $socket->send(json_encode($server->stats(), 128));
+                    } elseif ($msg == TaskConstant::RELOAD) {
+                        $server->reload(true);
+                        $socket->send('reload ok');
+                    } elseif ($msg == TaskConstant::RESTART) {
+                        Process::kill($server->manager_pid, SIGUSR1);
+                        Process::kill($server->manager_pid, SIGUSR2);
+                        $socket->send('restart ok');
+                    } elseif ($msg == TaskConstant::STOP) {
+                        Process::kill($server->manager_pid, SIGTERM);
+                    }
+                }
+            },
+            false,
+            2,
+            1
+        );
+
+        $server->addProcess($process);
+
+        $server->on('Receive', function ($server, $fd, $reactorId, $data) use ($process) {
+            if (in_array($data, TaskConstant::USER_COMMAND)) {
+                $socket = $process->exportSocket();
+                $socket->send($data);
+                $server->send($fd, $socket->recv());
+            } else {
+                $this->onReceive($server, $fd, $reactorId, $data);
+            }
+        });
 
         $server->start();
     }
