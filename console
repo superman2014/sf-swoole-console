@@ -7,7 +7,7 @@ require __DIR__.'/vendor/autoload.php';
 use Symfony\Component\Console\Application;
 use Superman2014\SfSwooleConsole\Command\TaskServerCommand;
 
-$application = new Application();
+$application = new Application('Xiaozhu Worker', '1.0.0');
 
 // ... register commands
 $application->add(new TaskServerCommand());
