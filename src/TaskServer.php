@@ -5,6 +5,7 @@ namespace Superman2014\SfSwooleConsole;
 use Swoole\Server;
 use Swoole\Process;
 use Swoole\Client;
+use Swoole\Timer;
 
 class TaskServer
 {
@@ -20,6 +21,7 @@ class TaskServer
         'task_ipc_mode' => 3,
         'heartbeat_check_interval' => 5,
         'heartbeat_idle_time' => 10,
+        'pid_file' => '/tmp/sf-swoole-console.pid',
     ];
 
     const LISTEN_HOST = '0.0.0.0';
@@ -35,7 +37,8 @@ class TaskServer
                 $this->start();
                 break;
             case TaskConstant::STOP:
-                $this->stop();
+                $recv = $this->clientSendCommand()(TaskConstant::STOP);
+                Process::kill($recv, SIGTERM);
                 break;
             case TaskConstant::STATUS:
                 $this->clientSendCommand()(TaskConstant::STATUS);
@@ -59,20 +62,14 @@ class TaskServer
                 exit("connect failed. Error: {$client->errCode}\n");
             }
             $client->send($command);
-            echo $client->recv();
+            $recv = $client->recv();
             $client->close();
-
+            return $recv;
         };
     }
 
     public function start()
     {
-        $taskPid = new TaskPid();
-        if ($taskPid->exists()) {
-            echo "server started", PHP_EOL;
-            return;
-        }
-
         $server = new Server(self::LISTEN_HOST, self::PORT, SWOOLE_BASE, SWOOLE_SOCK_TCP);
 
         $server->set($this->config);
@@ -86,6 +83,7 @@ class TaskServer
         $server->on('WorkerStop', [$this, 'onWorkerStop']);
         $server->on('ManagerStart', [$this, 'onManagerStart']);
         $server->on('Shutdown', [$this, 'onShutdown']);
+        $server->on('WorkerExit', [$this, 'onWorkerExit']);
 
         /**
          * 用户进程实现了广播功能，循环接收unixSocket的消息，并发给服务器的所有连接
@@ -105,7 +103,7 @@ class TaskServer
                         Process::kill($server->manager_pid, SIGUSR2);
                         $socket->send('restart ok');
                     } elseif ($msg == TaskConstant::STOP) {
-                        Process::kill($server->manager_pid, SIGTERM);
+                        $socket->send($server->manager_pid);
                     }
                 }
             },
@@ -127,15 +125,6 @@ class TaskServer
         });
 
         $server->start();
-    }
-
-    public function stop()
-    {
-        $taskPid = new TaskPid();
-        if ($taskPid->exists()) {
-            $masterPid = $taskPid->read(TaskPid::MASTER_PID);
-            Process::kill($masterPid, SIGTERM);
-        }
     }
 
     public function onConnect(Server $server, int $fd, int $reactorId)
@@ -166,28 +155,19 @@ class TaskServer
 
     public function onShutdown(Server $server)
     {
-        $taskPid = new TaskPid();
-        $taskPid->del();
     }
 
     public function onWorkerStart(Server $server, int $workerId)
     {
-        $pids = [
-            'master_pid' => $server->master_pid,
-            'manager_pid' => $server->manager_pid,
-        ];
-
-        $taskPid = new TaskPid();
-        if (!$taskPid->write(json_encode($pids))) {
-            echo "write pid failure", PHP_EOL;
-        }
-
         if($server->taskworker) {
             swoole_set_process_name("task-worker");
             echo "任务进程启动", $workerId, PHP_EOL;
         } else {
             swoole_set_process_name("event-worker");
             echo "工作进程启动", $workerId, PHP_EOL;
+            Timer::tick(30000, function($timerId) use ($workerId, $server) {
+                echo "Timer:$workerId, $timerId", PHP_EOL;
+            });
         }
     }
 
@@ -204,8 +184,8 @@ class TaskServer
 
     public function onWorkerExit(Server $server, int $workerId)
     {
+        Timer::clearAll();
     }
-
 
     public function onTaskStart()
     {
