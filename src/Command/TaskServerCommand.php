@@ -24,7 +24,7 @@ class TaskServerCommand extends Command
         $this
             ->setDescription('Start Swoole Task Server')
             ->setHelp('Swoole Task Manager')
-            ->addArgument('cmd', InputArgument::REQUIRED, 'start|stop|status|relaod|restart|ping|usage')
+            ->addArgument('cmd', InputArgument::OPTIONAL, 'start|stop|status|relaod|restart|ping|usage', 'usage')
         ;
     }
 
