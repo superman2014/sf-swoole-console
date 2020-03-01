@@ -30,6 +30,12 @@ class TaskServer
 
     const PORT = 9501;
 
+    const ADD = 'add';
+
+    const OP = [
+        self::ADD,
+    ];
+
     public function __construct($command)
     {
         switch ($command) {
@@ -137,10 +143,31 @@ class TaskServer
     {
         echo "[from-reactor-id=$reactorId][worker-id=$server->worker_id]][data=$data]", PHP_EOL;
 
-        //投递异步任务
-        $taskId = $server->task($data);
+        $data = json_decode(trim($data), true);
 
-        $server->send($fd, "receive success, task-id:" . $taskId . PHP_EOL);
+        if (JSON_ERROR_NONE == json_last_error()) {
+            $ret = false;
+            if (!empty($data['op']) && in_array($data['op'], self::OP) && !empty($data['data'])) {
+                switch ($data['op']) {
+                    case self::ADD:
+                        $tasks = array_chunk($data['data'], 2);
+                        do {
+                            $results = $server->taskWaitMulti($tasks, 10);
+
+                            if (count($results) == 1) {
+                                break;
+                            } else {
+                                $tasks = array_chunk($results, 2);
+                            }
+                        } while (true);
+                        $ret = $results[0];
+                        break;
+                }
+            }
+            $server->send($fd, $ret . PHP_EOL);
+        } else {
+            $server->send($fd, json_last_error_msg() . PHP_EOL);
+        }
     }
 
     public function onClose(Server $server, int $fd, int $reactorId)
@@ -165,9 +192,6 @@ class TaskServer
         } else {
             swoole_set_process_name("event-worker");
             echo "工作进程启动", $workerId, PHP_EOL;
-            Timer::tick(30000, function($timerId) use ($workerId, $server) {
-                echo "Timer:$workerId, $timerId", PHP_EOL;
-            });
         }
     }
 
@@ -194,10 +218,13 @@ class TaskServer
 
     public function onTask(Server $server, int $taskId, int $fromWorkerId, $data)
     {
-        echo "[from-worker-id=$fromWorkerId][task-id=$taskId][data=$data]", PHP_EOL;
+        echo "[from-worker-id=$fromWorkerId][task-id=$taskId][data=", json_encode($data), "]", PHP_EOL;
 
-        //返回任务执行的结果
-        $server->finish("$data -> task-finish");
+        if (is_array($data)) {
+            return $data[0] + $data[1];
+        } else {
+            return 0;
+        }
     }
 
     public function onFinish(Server $server, int $taskId, string $data)
