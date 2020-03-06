@@ -21,6 +21,9 @@ class TaskServer
         'heartbeat_check_interval' => 5,
         'heartbeat_idle_time' => 10,
         'pid_file' => '/tmp/sf-swoole-console.pid',
+        'request_slowlog_file' => '/tmp/trace.log',
+        'request_slowlog_timeout' => 2, // 设置请求超时时间为2秒
+        'trace_event_worker' => true, //跟踪 Task 和 Worker 进程
 
         'open_length_check' => true,
         'package_length_type' => 'n',
@@ -42,38 +45,58 @@ class TaskServer
                 $this->start();
                 break;
             case TaskConstant::STOP:
-                 $this->clientSendCommand()(TaskConstant::STOP);
+                 $this->clientSendCommand(TaskConstant::STOP)();
                 break;
             case TaskConstant::STATUS:
-                $recv = $this->clientSendCommand()(TaskConstant::STATUS);
+                $recv = $this->clientSendCommand(TaskConstant::STATUS)();
                 var_dump($recv['body']);
                 break;
             case TaskConstant::PING:
-                var_dump($this->clientSendCommand()(TaskConstant::PING));
+                var_dump($this->clientSendCommand(TaskConstant::PING)());
                 break;
             case TaskConstant::RELOAD:
-                $recv = $this->clientSendCommand()( TaskConstant::RELOAD);
+                $recv = $this->clientSendCommand( TaskConstant::RELOAD)();
                 echo $recv['body'],PHP_EOL;
                 break;
             case TaskConstant::RESTART:
-                $recv = $this->clientSendCommand()( TaskConstant::RESTART);
+                $recv = $this->clientSendCommand( TaskConstant::RESTART)();
                 echo $recv['body'],PHP_EOL;
+                break;
+            case TaskConstant::ADD:
+
+                $params = [
+                    1,
+                    2,
+                    3,
+                ];
+
+                $recv = $this->clientSendCommand(
+                    TaskConstant::ADD
+                )(json_encode($params));
+
+                echo sprintf("add input array:[ %s]" . PHP_EOL, implode(',', $params));
+                echo sprintf("result:%s".PHP_EOL, $recv['body']);
+
                 break;
         }
     }
 
-    public function clientSendCommand()
+    public function clientSendCommand($command)
     {
-        return function ($command) {
+        return function ($params = null) use ($command) {
+            if (empty($params)) {
+                $params = $command;
+            }
+
             $client = new Client(SWOOLE_SOCK_TCP);
             if (!$client->connect(self::MANAGE_HOST, self::PORT, -1)) {
                 exit("connect failed. Error: {$client->errCode}\n");
             }
 
-            if (in_array($command, TaskConstant::COMMAND_SET)) {
-                $client->send(Protocol::encode($command, TaskConstant::commandIdByName($command)));
+            if (in_array($command, TaskConstant::commandLine())) {
+                $client->send(Protocol::encode($params, TaskConstant::commandIdByName($command)));
             } else {
-                $client->send(Protocol::encode($command, TaskConstant::commandIdByName(TaskConstant::DATA)));
+                exit("client not implement {$command} \n");
             }
 
             $recv = $client->recv();
@@ -127,9 +150,8 @@ class TaskServer
     {
         $socket = $process->exportSocket();
         while (true) {
-            $msg = $socket->recv();
+            $command = $socket->recv();
 
-            $command = TaskConstant::COMMAND_ID_LIST[$msg];
             if ($command == TaskConstant::STATUS) {
                 $socket->send(json_encode($server->stats()));
             } elseif ($command == TaskConstant::RELOAD) {
@@ -141,11 +163,13 @@ class TaskServer
                 $socket->send('restart ok');
             } elseif ($command == TaskConstant::STOP) {
                 $server->shutdown();
+            } elseif ($command == TaskConstant::PING) {
+                $socket->send('pong');
+            } else {
+                $socket->send('not system command');
             }
         }
-
     }
-
 
     public function onConnect(Server $server, int $fd, int $reactorId)
     {
@@ -156,18 +180,54 @@ class TaskServer
     public function onReceive(Server $server, int $fd, int $reactorId, $data, $process)
     {
         if (strlen($data) <= 7) {
+            $server->send(
+                $fd,
+                Protocol::encode(
+                    'request data is exception',
+                    TaskConstant::nameByCommandId(TaskConstant::EX),
+                    0
+                )
+            );
             return;
         }
         $msg = Protocol::decode($data);
-        if (in_array($c = TaskConstant::COMMAND_ID_LIST[$msg['commandId']], TaskConstant::USER_COMMAND)) {
-            $socket = $process->exportSocket();
-            $socket->send($msg['commandId']);
+
+        if (!$command = TaskConstant::nameByCommandId($msg['commandId'])) {
             $server->send(
                 $fd,
-                Protocol::encode($socket->recv(), TaskConstant::commandIdByName(TaskConstant::DATA))
+                Protocol::encode(
+                    'not found command ID:'. $msg['commandId'],
+                    TaskConstant::nameByCommandId(TaskConstant::EX),
+                    0
+                )
             );
-        } else {
-            $server->send($fd, Protocol::encode($data['body'], $data['commandId']));
+            return;
+        }
+
+        if (in_array($command, TaskConstant::SYS_COMMAND)) {
+            $socket = $process->exportSocket();
+            $socket->send($command);
+            $server->send(
+                $fd,
+                Protocol::encode($socket->recv(), TaskConstant::commandIdByName($command))
+            );
+        } elseif (in_array($command, TaskConstant::USER_COMMAND)) {
+
+            switch ($command) {
+                case TaskConstant::ADD:
+                    $params = json_decode($msg['body'], true);
+                    $ex = 0;
+                    if (json_last_error() == JSON_ERROR_NONE) {
+                        $result = array_sum($params);
+                    } else {
+                        $result = 0;
+                        $ex = 1;
+                    }
+                    $server->send($fd, Protocol::encode($result, $msg['commandId'], $ex));
+                    break;
+                default:
+                    $server->send($fd, Protocol::encode('not implement command ID', $msg['commandId'], 0));
+            }
         }
     }
 

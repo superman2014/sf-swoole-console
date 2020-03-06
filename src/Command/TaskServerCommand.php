@@ -32,8 +32,8 @@ class TaskServerCommand extends Command
     {
         $command = $input->getArgument('cmd');
 
-        if (!in_array($command, TaskConstant::COMMAND_SET) || $command == TaskConstant::USAGE) {
-            $output->write("php console task:server <start|stop|status|reload|restart|ping|usage>".PHP_EOL);
+        if (!in_array($command, TaskConstant::commandLine()) || $command == TaskConstant::USAGE) {
+            $output->write("php console task:server " . TaskConstant::commandUsage());
             return 0;
         }
 
