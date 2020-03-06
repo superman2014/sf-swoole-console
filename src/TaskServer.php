@@ -22,6 +22,12 @@ class TaskServer
         'heartbeat_check_interval' => 5,
         'heartbeat_idle_time' => 10,
         'pid_file' => '/tmp/sf-swoole-console.pid',
+
+        'open_length_check' => true,
+        'package_length_type' => 'n',
+        'package_length_offset' => 0,
+        'package_body_offset' => Protocol::HEADER,
+        'package_max_length' => Protocol::PACKAGE_LENGTH,
     ];
 
     const LISTEN_HOST = '0.0.0.0';
@@ -37,19 +43,22 @@ class TaskServer
                 $this->start();
                 break;
             case TaskConstant::STOP:
-                $recv = $this->clientSendCommand()(TaskConstant::STOP);
-                Process::kill($recv, SIGTERM);
+                 $this->clientSendCommand()(TaskConstant::STOP);
                 break;
             case TaskConstant::STATUS:
-                $this->clientSendCommand()(TaskConstant::STATUS);
+                $recv = $this->clientSendCommand()(TaskConstant::STATUS);
+                var_dump($recv['body']);
                 break;
             case TaskConstant::PING:
+                var_dump($this->clientSendCommand()(TaskConstant::PING));
                 break;
             case TaskConstant::RELOAD:
-                $this->clientSendCommand()(TaskConstant::RELOAD);
+                $recv = $this->clientSendCommand()( TaskConstant::RELOAD);
+                echo $recv['body'],PHP_EOL;
                 break;
             case TaskConstant::RESTART:
-                $this->clientSendCommand()(TaskConstant::RESTART);
+                $recv = $this->clientSendCommand()( TaskConstant::RESTART);
+                echo $recv['body'],PHP_EOL;
                 break;
         }
     }
@@ -61,10 +70,16 @@ class TaskServer
             if (!$client->connect(self::MANAGE_HOST, self::PORT, -1)) {
                 exit("connect failed. Error: {$client->errCode}\n");
             }
-            $client->send($command);
+
+            if (in_array($command, TaskConstant::COMMAND_SET)) {
+                $client->send(Protocol::encode($command, TaskConstant::commandIdByName($command)));
+            } else {
+                $client->send(Protocol::encode($command, TaskConstant::commandIdByName(TaskConstant::DATA)));
+            }
+
             $recv = $client->recv();
             $client->close();
-            return $recv;
+            return Protocol::decode($recv);
         };
     }
 
@@ -93,17 +108,19 @@ class TaskServer
                 $socket = $process->exportSocket();
                 while (true) {
                     $msg = $socket->recv();
-                    if ($msg == TaskConstant::STATUS) {
-                        $socket->send(json_encode($server->stats(), 128));
-                    } elseif ($msg == TaskConstant::RELOAD) {
+
+                    $command = TaskConstant::COMMAND_ID_LIST[$msg];
+                    if ($command == TaskConstant::STATUS) {
+                        $socket->send(json_encode($server->stats()));
+                    } elseif ($command == TaskConstant::RELOAD) {
                         $server->reload(true);
                         $socket->send('reload ok');
-                    } elseif ($msg == TaskConstant::RESTART) {
+                    } elseif ($command == TaskConstant::RESTART) {
                         Process::kill($server->manager_pid, SIGUSR1);
                         Process::kill($server->manager_pid, SIGUSR2);
                         $socket->send('restart ok');
-                    } elseif ($msg == TaskConstant::STOP) {
-                        $socket->send($server->manager_pid);
+                    } elseif ($command == TaskConstant::STOP) {
+                        $server->shutdown();
                     }
                 }
             },
@@ -115,12 +132,13 @@ class TaskServer
         $server->addProcess($process);
 
         $server->on('Receive', function ($server, $fd, $reactorId, $data) use ($process) {
-            if (in_array($data, TaskConstant::USER_COMMAND)) {
+            $msg = Protocol::decode($data);
+            if (in_array($c = TaskConstant::COMMAND_ID_LIST[$msg['commandId']], TaskConstant::USER_COMMAND)) {
                 $socket = $process->exportSocket();
-                $socket->send($data);
-                $server->send($fd, $socket->recv());
+                $socket->send($msg['commandId']);
+                $server->send($fd, Protocol::encode($socket->recv(), TaskConstant::commandIdByName(TaskConstant::DATA)));
             } else {
-                $this->onReceive($server, $fd, $reactorId, $data);
+                $this->onReceive($server, $fd, $reactorId, $msg);
             }
         });
 
@@ -133,14 +151,9 @@ class TaskServer
     }
 
     //此回调函数在worker进程中执行
-    public function onReceive(Server $server, int $fd, int $reactorId, string $data)
+    public function onReceive(Server $server, int $fd, int $reactorId, $data)
     {
-        echo "[from-reactor-id=$reactorId][worker-id=$server->worker_id]][data=$data]", PHP_EOL;
-
-        //投递异步任务
-        $taskId = $server->task($data);
-
-        $server->send($fd, "receive success, task-id:" . $taskId . PHP_EOL);
+        $server->send($fd, Protocol::encode($data['body'], $data['commandId']));
     }
 
     public function onClose(Server $server, int $fd, int $reactorId)
@@ -165,9 +178,6 @@ class TaskServer
         } else {
             swoole_set_process_name("event-worker");
             echo "工作进程启动", $workerId, PHP_EOL;
-            Timer::tick(30000, function($timerId) use ($workerId, $server) {
-                echo "Timer:$workerId, $timerId", PHP_EOL;
-            });
         }
     }
 
