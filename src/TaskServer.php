@@ -5,7 +5,6 @@ namespace Superman2014\SfSwooleConsole;
 use Swoole\Server;
 use Swoole\Process;
 use Swoole\Client;
-use Swoole\Timer;
 
 class TaskServer
 {
@@ -79,6 +78,9 @@ class TaskServer
 
             $recv = $client->recv();
             $client->close();
+            if (empty($recv)) {
+                return "";
+            }
             return Protocol::decode($recv);
         };
     }
@@ -105,24 +107,7 @@ class TaskServer
          */
         $process = new Process(
             function ($process) use ($server) {
-                $socket = $process->exportSocket();
-                while (true) {
-                    $msg = $socket->recv();
-
-                    $command = TaskConstant::COMMAND_ID_LIST[$msg];
-                    if ($command == TaskConstant::STATUS) {
-                        $socket->send(json_encode($server->stats()));
-                    } elseif ($command == TaskConstant::RELOAD) {
-                        $server->reload(true);
-                        $socket->send('reload ok');
-                    } elseif ($command == TaskConstant::RESTART) {
-                        Process::kill($server->manager_pid, SIGUSR1);
-                        Process::kill($server->manager_pid, SIGUSR2);
-                        $socket->send('restart ok');
-                    } elseif ($command == TaskConstant::STOP) {
-                        $server->shutdown();
-                    }
-                }
+                $this->processUserProcess($process, $server);
             },
             false,
             2,
@@ -132,18 +117,35 @@ class TaskServer
         $server->addProcess($process);
 
         $server->on('Receive', function ($server, $fd, $reactorId, $data) use ($process) {
-            $msg = Protocol::decode($data);
-            if (in_array($c = TaskConstant::COMMAND_ID_LIST[$msg['commandId']], TaskConstant::USER_COMMAND)) {
-                $socket = $process->exportSocket();
-                $socket->send($msg['commandId']);
-                $server->send($fd, Protocol::encode($socket->recv(), TaskConstant::commandIdByName(TaskConstant::DATA)));
-            } else {
-                $this->onReceive($server, $fd, $reactorId, $msg);
-            }
+            $this->onReceive($server, $fd, $reactorId, $data, $process);
         });
 
         $server->start();
     }
+
+    public function processUserProcess($process, $server)
+    {
+        $socket = $process->exportSocket();
+        while (true) {
+            $msg = $socket->recv();
+
+            $command = TaskConstant::COMMAND_ID_LIST[$msg];
+            if ($command == TaskConstant::STATUS) {
+                $socket->send(json_encode($server->stats()));
+            } elseif ($command == TaskConstant::RELOAD) {
+                $server->reload(true);
+                $socket->send('reload ok');
+            } elseif ($command == TaskConstant::RESTART) {
+                Process::kill($server->manager_pid, SIGUSR1);
+                Process::kill($server->manager_pid, SIGUSR2);
+                $socket->send('restart ok');
+            } elseif ($command == TaskConstant::STOP) {
+                $server->shutdown();
+            }
+        }
+
+    }
+
 
     public function onConnect(Server $server, int $fd, int $reactorId)
     {
@@ -151,9 +153,22 @@ class TaskServer
     }
 
     //此回调函数在worker进程中执行
-    public function onReceive(Server $server, int $fd, int $reactorId, $data)
+    public function onReceive(Server $server, int $fd, int $reactorId, $data, $process)
     {
-        $server->send($fd, Protocol::encode($data['body'], $data['commandId']));
+        if (strlen($data) <= 7) {
+            return;
+        }
+        $msg = Protocol::decode($data);
+        if (in_array($c = TaskConstant::COMMAND_ID_LIST[$msg['commandId']], TaskConstant::USER_COMMAND)) {
+            $socket = $process->exportSocket();
+            $socket->send($msg['commandId']);
+            $server->send(
+                $fd,
+                Protocol::encode($socket->recv(), TaskConstant::commandIdByName(TaskConstant::DATA))
+            );
+        } else {
+            $server->send($fd, Protocol::encode($data['body'], $data['commandId']));
+        }
     }
 
     public function onClose(Server $server, int $fd, int $reactorId)
@@ -194,7 +209,6 @@ class TaskServer
 
     public function onWorkerExit(Server $server, int $workerId)
     {
-        Timer::clearAll();
     }
 
     public function onTaskStart()
